@@ -1,0 +1,84 @@
+﻿SET ANSI_NULLS ON
+SET QUOTED_IDENTIFIER ON
+GO
+
+-- =============================================
+-- Author:        Balbir Singh
+-- Create date: May 30, 2008
+-- Description:    Re-INDEX based on fragmentation, 
+-- Modified : 03/12/2009 check fragmentation level.
+-- EXEC DBO.POST_DBREINDEX 'transac_live'
+-- =============================================
+CREATE PROCEDURE [dbo].[POST_DBREINDEX] 
+	@TABLENAME SYSNAME
+AS
+BEGIN TRY
+	IF NOT EXISTS (SELECT NAME FROM SYS.SYSOBJECTS WHERE NAME = @TABLENAME)
+	BEGIN
+		PRINT 'TABLE NOT FOUND'
+		RETURN
+	END
+
+	DECLARE @SQLREINDEX VARCHAR(2000)
+	DECLARE @INDEXNAME VARCHAR(255)
+	DECLARE @AVG_FRAG SMALLINT
+	DECLARE @PAGE_COUNT INT
+	DECLARE @OBJECT_ID INT
+	SET @OBJECT_ID = OBJECT_ID(@TABLENAME)
+
+	-- declare cursor 
+	DECLARE FRAG_CURSOR CURSOR FOR
+	SELECT     --OBJECT_NAME(dt.Object_id) TableName, 
+	si.Name IndexName, DT.Avg_Fragmentation_In_percent, dt.Page_Count
+	FROM ( 
+		SELECT OBJECT_ID, Index_Id, Partition_Number, Avg_Fragmentation_In_percent, 
+		Avg_Page_Space_Used_In_Percent, Page_Count 
+        FROM Sys.Dm_Db_Index_Physical_Stats (DB_ID(), @OBJECT_ID, NULL, NULL, NULL) 
+		WHERE Index_Id NOT IN (0) 
+			AND Index_Level = 0 
+	) AS dt 
+    INNER JOIN Sys.Indexes si ON si.OBJECT_ID = dt.OBJECT_ID AND si.Index_Id = dt.Index_Id
+
+	OPEN FRAG_CURSOR
+	FETCH NEXT FROM FRAG_CURSOR INTO @INDEXNAME, @AVG_FRAG, @PAGE_COUNT
+	WHILE @@FETCH_STATUS = 0 BEGIN
+    	-- PRINT @INDEXNAME + ' '+CONVERT(VARCHAR(40),@AVG_FRAG)
+    	-- Check fragmentation level
+    	IF @AVG_FRAG > 30 AND @PAGE_COUNT > 1000 BEGIN
+			PRINT 'REBUILD STARTED'+' '+@INDEXNAME
+			SET @SQLREINDEX = ''
+			-- DBCC DBREINDEX (@TABLENAME, @PKNAME, 0)
+			-- REINDEX PRIMARY AS WELL AS SECOUNDARY INDEXES WITH 95% FILL FACTOR FOR INCREMENTAL LOAD
+
+			SET @SQLREINDEX = 'ALTER INDEX ['+@INDEXNAME+'] ON DBO.['+@TABLENAME+'] 
+            				 REBUILD WITH ( MAXDOP = 8, 
+                            				 FILLFACTOR = 95, 
+                           					SORT_IN_TEMPDB = ON, 
+                        				 STATISTICS_NORECOMPUTE = ON
+                            				)' 
+
+			 EXEC(@SQLREINDEX)
+    	END
+
+    	IF (@AVG_FRAG > 10 AND @AVG_FRAG <= 30) AND @PAGE_COUNT > 1000 BEGIN
+			PRINT 'REORGANIZE STARTED'+' '+@INDEXNAME
+
+			SET @SQLREINDEX = ''
+			SET @SQLREINDEX = 'ALTER INDEX ['+@INDEXNAME+'] ON DBO.['+@TABLENAME+'] REORGANIZE'
+
+			EXEC(@SQLREINDEX)
+    	END
+    	FETCH NEXT FROM FRAG_CURSOR INTO @INDEXNAME, @AVG_FRAG, @PAGE_COUNT
+	END
+	CLOSE FRAG_CURSOR
+	DEALLOCATE FRAG_CURSOR
+
+	SELECT '' AS ErrorMessage
+END TRY
+BEGIN CATCH
+	SELECT CONVERT (TEXT, ERROR_MESSAGE()) AS ErrorMessage
+	CLOSE FRAG_CURSOR
+	DEALLOCATE FRAG_CURSOR
+	CLOSE INDEX_CURSOR
+	DEALLOCATE INDEX_CURSOR
+END CATCH

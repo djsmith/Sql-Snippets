@@ -1,0 +1,501 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+
+<html xmlns="http://www.w3.org/1999/xhtml" >
+<head>
+    <title>TSQL Solutions - Concatenating row values in T-SQL</title>
+    <link rel="stylesheet" href="../shared/default.css" type="text/css" >    
+</head>
+<body>	
+
+<table class="body">
+	<tr align="left">
+		<td></td>
+	</tr>
+	<tr align="left"><td valign="top"><b>Concatenating row values in Transact-SQL</b><br><br>	</td>
+	</tr>
+	<tr align="left"><td valign="top"><b>
+	<ul type="disc">
+	    <li><a href="#Intro">Introduction</a>
+	    <li><a href="#Core">A core issue</a>
+        <li><a href="#Consider">Considerations</a>
+        <li><a href="#Limited">Concatenating values when the number of items is small and known upfront</a>
+        <li><a href="#Unlimited">Concatenating values when the number of items are not known</a>
+        <ul type="square">
+            <li><a href="#RecurCTE">Recursive CTE method</a>
+	        <li><a href="#BBXML">The blackbox XML methods</a>
+	        <li><a href="#UsingCLR">Using Common Language Runtime</a>
+	        <li><a href="#ScalarRecur">Scalar UDF with recursion</a>
+	        <li><a href="#TblUDF">Table valued UDF with a WHILE loop</a>
+	        <li><a href="#DynamicSQL">Dynamic SQL</a>
+	        <li><a href="#Cursor">The Cursor approach</a></li>
+	    </ul>
+        <li><a href="#Unreliable">Non-reliable approaches</a> 
+        <ul type="square">
+            <li><a href="#UpdateExtn">Scalar UDF with t-SQL update extension</a>
+	        <li><a href="#SelectConcat">Scalar UDF with variable concatenation in SELECT</a></li>
+	    </ul>
+        <li><a href="#Concl">Conclusion</a>
+        <li><a href="#Refer">References</a>
+        <li><a href="#Acknow">Acknowledgements</a></li>	
+	</ul>
+	</b>	</td>
+	</tr>	
+	<tr><td align="left"><b><a name="#Intro"></a>Introduction</b><br ><br >
+Many a time, SQL programmers are faced with a requirement to generate report-like resultsets right off of a Transact SQL 
+query. In most cases, the requirement arises from the fact that there are no sufficient tools or in-house expertise to develop 
+tools that can extract the data as a resultset and massage the data in the desired display format. Quite often folks are 
+confused about the potential of breaking relational fundamentals say like First Normal Form or the scalar nature of typed 
+values. (Talking about 1NF violations in a language like SQL which lacks sufficient domain support, allows NULLs and supports 
+duplicates is somewhat ironic to begin with, but that is a topic which requires detailed explanations.) 
+    <br ><br >
+Concatenating column values or expressions from multiple rows are usually best done in a client side application language, 
+since the string manipulation capabilities of Transact SQL and SQL based DBMSs are somewhat limited. However, you can do these 
+using different approaches in Transact SQL, but avoiding such methods for long term solutions is your best bet. 
+    <br ><br >
+       <b><a name="#Core"></a>A core issue</b>
+       <br ><br >
+Even though SQL in general deviates considerably from the relational model, its reliance on certain core aspects of relational 
+foundations makes SQL functional and powerful. One such core aspect is the set based nature of SQL expressions (well, multi-sets 
+to be exact, but for the given context let us ignore the issue of duplication). The primary idea is that tables are unordered 
+and hence the resultsets of any query that does not have an explicit ORDER BY clause is unordered as well. In other words, the rows 
+in a resultset of a query do not have a prescribed position, unless it is explicitly specified in the query expression.
+		<br ><br >   
+On the other hand, a concatenated list is an ordered structure. Each element in the list has a specific position. In fact, 
+concatenation itself is an order-utilizing operation in the sense that values can be prefixed or post fixed to an existing list. So 
+approaches that are loosely called “concatenating row values”, “aggregate concatenation” etc. would have to make sure that some kind 
+of an order, either explicit or implicit, should be specified prior to concatenating the row values. If such an ordering criteria 
+is not provided, the concatenated string would be arbitrary in nature.		
+		<br ><br >  
+       <b><a name="#Consider"></a>Considerations</b>
+       <br ><br >
+Generally, requests for row value concatenations often comes in two basic flavors, when the number of rows is known and small (typically 
+less than 10) and when the number of rows is unknown and potentially large. It may be better to look at each of them separately. 
+		<br ><br >
+In some cases, all the programmer wants is just the list of values from a set of rows. There is no grouping or logical partitioning 
+of values like the list of email addresses separated by a semicolon or some such. In such situations, the approaches can be the same 
+except the join conditions may vary. Minor variations of the examples list on this page illustrate such solutions as well. 
+		<br ><br >
+For the purpose of this article the Products table from Northwind database is used to illustrate column value concatenations with a 
+grouping column. Northwind is a sample database in SQL Server 2000 default installations. You can download a copy from from the
+<a href="http://www.microsoft.com/downloads/details.aspx?familyid=06616212-0356-46a0-8da2-eebc53a68034&amp;displaylang=en">Microsoft Downloads</a>
+Consider the resultset produced by the following query: 
+        <br ><br >
+<pre>
+    SELECT CategoryId, ProductName 
+      FROM Northwind..Products ;
+  
+    CategoryId  ProductName                              
+    ----------- ---------------------------------------- 
+    1           Chai
+    1           Chang
+    ...
+    2           Aniseed Syrup
+    2           Chef Anton's Cajun Seasoning
+    ...
+    ...
+    8           Spegesild
+    
+    (77 row(s) affected)
+</pre>
+The goal is to return a resultset with two columns one with the Category Identifier and the other with a concatenated list of all 
+the Product Names separated by a delimiting character, say a comma for instance.  
+<pre>
+    CategoryId  Product List
+    ----------- -----------------------------------------------------------------------------
+    1           Chai, Chang, Chartreuse verte, Côte de Blaye, ...
+    2           Aniseed Syrup, Chef Anton's Cajun Seasoning, ...
+    3           Chocolade, Gumbär Gummibärchen, Maxilaku, ...
+    4           Camembert Pierrot, Flotemysost, Geitost, Gorgonzola Telino, ...
+    5           Filo Mix, Gnocchi di nonna Alice, Gustaf's Knäckebröd, ...
+    6           Alice Mutton, Mishi Kobe Niku, Pâté chinois, ...
+    7           Longlife Tofu, Manjimup Dried Apples, Rössle Sauerkraut, ...
+    8           Boston Crab Meat, Carnarvon Tigers, Escargots de Bourgogne, ...
+    
+    (8 row(s) affected)
+ </pre>
+        <b><a name="#Limited"></a>Concatenating values when the number of items is small and known upfront</b>
+        <br ><br >
+When the number of rows are small and almost known upfront, it is easier to generate the code. One common approach with a small set 
+of finite rows it the pivoting method. Here is an example where only first four alphabetically sorted product names per categoryid is 
+retrieved: 
+<pre>    SELECT CategoryId,
+           MAX( CASE seq WHEN 1 THEN ProductName ELSE '' END ) + ', ' +
+           MAX( CASE seq WHEN 2 THEN ProductName ELSE '' END ) + ', ' +
+           MAX( CASE seq WHEN 3 THEN ProductName ELSE '' END ) + ', ' +
+           MAX( CASE seq WHEN 4 THEN ProductName ELSE '' END )
+      FROM ( SELECT p1.CategoryId, p1.ProductName,
+                    ( SELECT COUNT(*) 
+                        FROM Northwind.dbo.Products p2
+                       WHERE p2.CategoryId = p1.CategoryId
+                         AND p2.ProductName &lt;= p1.ProductName )
+               FROM Northwind.dbo.Products p1 ) D ( CategoryId, ProductName, seq )
+     GROUP BY CategoryId ;
+</pre>
+The idea above is to create a expression inside the correlated subquery that produces a rank (seq) based on the product names and 
+then use it in the outer query. Using common table expressions and the ROW_NUMBER() function, you can re-write this as: 
+<pre>
+; WITH CTE ( CategoryId, ProductName, seq )
+    AS ( SELECT p1.CategoryId, p1.ProductName,
+                ROW_NUMBER() OVER ( PARTITION BY CategoryId ORDER BY ProductName )
+           FROM Northwind.dbo.Products p1 )
+    SELECT CategoryId,
+           MAX( CASE seq WHEN 1 THEN ProductName ELSE '' END ) + ', ' +
+           MAX( CASE seq WHEN 2 THEN ProductName ELSE '' END ) + ', ' +
+           MAX( CASE seq WHEN 3 THEN ProductName ELSE '' END ) + ', ' +
+           MAX( CASE seq WHEN 4 THEN ProductName ELSE '' END )
+      FROM CTE 
+     GROUP BY CategoryId ;
+</pre>
+Note that ROW_NUMBER() is a newly introduced feature in SQL 2005. If you are using any previous versions, you will have to use the 
+subquery approach (You can also use a self-join, to write it a bit differently). Using the recently introduced PIVOT operator, you 
+can write the above as following : 
+<pre>
+    SELECT CategoryId, 
+           "1" + ', ' + "2" + ', ' + "3" + ', ' + "4" AS Product_List
+      FROM ( SELECT CategoryId, ProductName, 
+                    ROW_NUMBER() OVER (PARTITION BY CategoryId ORDER BY ProductName)
+               FROM Northwind.dbo.Products ) P ( CategoryId, ProductName, seq )
+     PIVOT ( MAX( ProductName ) FOR seq IN ( "1", "2", "3", "4" ) ) AS P_ ;
+</pre>
+Not only the syntax appears a bit confusing, it does not appear to offer anything functionally beyond the CASE approach above. However, 
+in rare situations, it could come in handy. 
+<br ><br >
+<b><a name="#Unlimited"></a>Concatenating values when the number of items is not known </b>
+<br ><br >
+When the number of items that are to be concatenated is not known upfront, the code can become a bit more demanding. The new features 
+in SQL 2005 make some of the approaches a bit easy. For instance, the recursive common table expressions (CTEs) and the FOR XML PATH('') 
+syntax makes the server do the hard work behind the concatenation leaving the programmer to deal with the presentation issues. The 
+examples below make this point obvious.
+<br ><br >
+<b><a name="#RecurCTE"></a>Recursive CTE method </b>
+<br ><br >
+The idea behind this method is from a newsgroup posting by Vadim Tropashko similar to the ideas behind generating a materialized path 
+for hierarchies. 
+<pre>    WITH CTE ( CategoryId, product_list, product_name, length ) 
+          AS ( SELECT CategoryId, CAST( '' AS VARCHAR(8000) ), CAST( '' AS VARCHAR(8000) ), 0
+                 FROM Northwind..Products
+                GROUP BY CategoryId
+                UNION ALL
+               SELECT p.CategoryId, CAST( product_list + 
+                      CASE WHEN length = 0 THEN '' ELSE ', ' END + ProductName AS VARCHAR(8000) ), 
+                      CAST( ProductName AS VARCHAR(8000)), length + 1
+                 FROM CTE c
+                INNER JOIN Northwind..Products p
+                   ON c.CategoryId = p.CategoryId
+                WHERE p.ProductName &gt; c.product_name )
+    SELECT CategoryId, product_list 
+      FROM ( SELECT CategoryId, product_list, 
+                    RANK() OVER ( PARTITION BY CategoryId ORDER BY length DESC )
+               FROM CTE ) D ( CategoryId, product_list, rank )
+     WHERE rank = 1 ;
+</pre>
+The CASE in the recursive part of the CTE is used to eliminate the initial comma and you can use RIGHT or the SUBSTRING functions 
+to substitute it. Also, this may not be the best performing option, however certain additional tuning could be done to make them 
+suitable for medium sized datasets.
+<br><br >
+<b><a name="#BBXML"></a>The blackbox XML methods</b>
+<br ><br >
+An example for string concatenation using FOR XML clause with PATH mode is detailed below. It was initially posted by Eugene Kogan 
+later became common in public newsgroups. 
+<pre>
+    SELECT p1.CategoryId,
+          ( SELECT ProductName + ',' 
+              FROM Northwind.dbo.Products p2
+             WHERE p2.CategoryId = p1.CategoryId
+             ORDER BY ProductName
+               FOR XML PATH('') ) AS Products
+      FROM Northwind.dbo.Products p1
+     GROUP BY CategoryId ;
+</pre>
+Again, the similar approach originally found in the beta newsgroups, using CROSS APPLY operator. 
+<pre>
+    SELECT DISTINCT CategoryId, ProductNames
+      FROM Products p1
+     CROSS APPLY ( SELECT ProductName + ',' 
+                     FROM Products p2
+                    WHERE p2.CategoryId = p1.CategoryId 
+                    ORDER BY ProductName 
+                      FOR XML PATH('') )  D ( ProductNames )
+</pre>
+You may notice a comma at the end of the concatenated string, which you can remove using a STUFF, SUBSTRING or LEFT function. While the
+above methods are deemed reliable by many at the time of writing, there is no guarantee that it will stay that way given the internal 
+workings and evaluation rules of FOR XML PATH() expression in correlated subqueries are not well documented.
+<br><br >
+<b><a name="#UsingCLR"></a>Using Common Language Runtime</b>
+<br><br >
+Though this article is about approaches using Transact SQL, this section is included due to the popularity of CLR aggregates in SQL 2005. Not only it 
+empowers the CLR programmer with new options for database development, in some cases, they work at least as well as native Transact 
+SQL approaches.
+<br><br >
+If you are familiar with .NET languages, SQL 2005 offers a convenient way to create user defined aggregate functions using C#, VB.NET or 
+similar languages that is supported by the Common Language Runtime (CLR). Here is an example of a string concatenate aggregate function 
+written using C#. 
+<br><br >
+<pre>
+    using System;
+    using System.Collections.Generic;
+    using System.Data.SqlTypes;
+    using System.IO;
+    using Microsoft.SqlServer.Server;
+
+    [Serializable]
+    [SqlUserDefinedAggregate(Format.UserDefined,  MaxByteSize=8000)]
+    public struct strconcat : IBinarySerialize{
+        private List<string> values;
+
+        public void Init()    {
+            this.values = new List<string>();
+        }
+
+        public void Accumulate(SqlString value)    {
+            this.values.Add(value.Value);
+        }
+
+        public void Merge(strconcat value)    {
+            this.values.AddRange(value.values.ToArray());
+        }
+
+        public SqlString Terminate()    {
+            return new SqlString(string.Join(", ", this.values.ToArray()));
+        }
+
+        public void Read(BinaryReader r)    {
+            int itemCount = r.ReadInt32();
+            this.values = new List<string>(itemCount);
+            for (int i = 0; i &lt;= itemCount - 1; i++)    {
+                this.values.Add(r.ReadString());
+            }
+        }
+
+        public void Write(BinaryWriter w)    {
+            w.Write(this.values.Count);
+            foreach (string s in this.values)      {
+                w.Write(s);
+            }
+        }
+    }
+</pre>
+Once you build and deploy this assembly on the server, you should be able to execute your concatenation query as:
+<br><br >
+<pre>
+    SELECT CategoryId, 
+           dbo.strconcat(ProductName) 
+      FROM Products 
+     GROUP BY CategoryId ; 
+</pre>
+If you are a total newbie on CLR languages, and would like to learn more about developing database solutions using CLR languages, 
+consider starting at <a href="http://msdn2.microsoft.com/en-us/library/ms131089.aspx">Introduction to Common Language Runtime (CLR) 
+Integration</a>
+    <br><br >
+    <b><a name="#ScalarRecur"></a>Scalar UDF with recursion </b>
+    <br><br >
+Recursive functions in t-SQL have a drawback that the maximum nesting level is 32. So this approach is applicable only for smaller 
+datasets, especially when the number of items within a group, that needs to be concatenated, is less than 32. 
+<pre>    CREATE FUNCTION udf_recursive ( @cid INT, @i INT ) 
+    RETURNS VARCHAR(8000) AS BEGIN 
+        DECLARE @r VARCHAR(8000), @l VARCHAR(8000) 
+        SELECT @i = @i - 1,  @r = ProductName + ', ' 
+          FROM Products p1 
+         WHERE CategoryId = @cid 
+           AND @i = ( SELECT COUNT(*) FROM Products p2 
+                       WHERE p2.CategoryId = p1.CategoryId 
+                         AND p2.ProductName &lt;= p1.ProductName ) ; 
+        IF @i &gt; 0 BEGIN 
+              EXEC @l = dbo.udf_recursive @cid, @i ;
+              SET @r =  @l + @r ;
+    END 
+    RETURN @r ;
+    END 
+</pre>
+This function can be invoked as follows:
+<pre>
+    SELECT CategoryId, 
+           dbo.udf_recursive( CategoryId, COUNT(ProductName) ) 
+      FROM Products 
+     GROUP BY CategoryId ; 
+</pre>
+<b><a name="#TblUDF"></a>Table valued UDF with a WHILE loop </b>
+		<br ><br >
+This approach is based on the idea by Linda Wierzbecki where a table variable with three columns is used within a table valued UDF. 
+The first column represents the group, second represents the currently processing value within a group and the third represents the 
+concatenated list of values. 
+<pre>    CREATE FUNCTION udf_tbl_Concat() RETURNS @t TABLE(
+            CategoryId INT, 
+            Product VARCHAR(40), 
+            list VARCHAR(8000) ) 
+    BEGIN 
+     INSERT @t (CategoryId, Product, list) 
+     SELECT CategoryId, MIN(ProductName),  MIN(ProductName) 
+       FROM Products 
+      GROUP BY CategoryId 
+    WHILE ( SELECT COUNT(Product) FROM @t ) &gt; 0 BEGIN 
+        UPDATE t 
+           SET list = list + COALESCE(
+                         ( SELECT ', ' + MIN( ProductName ) 
+                             FROM Products 
+                            WHERE Products.CategoryId = t.CategoryId 
+                              AND Products.ProductName &gt; t.Product), ''), 
+               Product = ( SELECT MIN(ProductName) 
+                             FROM Products 
+                            WHERE Products.CategoryId = t.CategoryId 
+                              AND Products.ProductName &gt; t.Product ) 
+          FROM @t t END 
+    RETURN 
+    END 
+</pre>
+The usage of the above function can be like:
+<pre>
+    SELECT CategoryId, list AS Products
+      FROM udf_tbl_Concat() ; 
+</pre>
+<b><a name="#DynamicSQL"></a>Dynamic SQL</b>
+<br ><br >
+This approach is a variation of the kludge often known using the nickname as dynamic cross tabulation.
+		<br ><br >
+This approach is a variation of the kludge often known using the nickname as dynamic cross tabulation. There is enough literature out 
+there which demonstrates the drawbacks and implications of using Dynamic SQL. A popular one, at least from Transact SQL programmer’s 
+perspective, is Erland's <a href="http://www.sommarskog.se/dynamic_sql.html">Curse and Blessings of Dynamic SQL.</a> The Dynamic SQL 
+approaches can be developed based on creating a Transact SQL query string based on the number of groups and then use a series of CASE 
+expressions or ROW_NUMBER() function to pivot the data for concatenation. 
+<pre>    DECLARE @r VARCHAR(MAX), @n INT, @i INT 
+    SELECT @i = 1,
+           @r = 'SELECT CategoryId, ' + CHAR(13), 
+           @n = (SELECT TOP 1 COUNT( ProductName ) 
+                   FROM Products 
+                  GROUP BY CategoryId 
+                  ORDER BY COUNT( ProductName ) DESC ) ;	
+    WHILE @i &lt;= @n BEGIN 
+	    SET @r = @r + 
+	    CASE WHEN @i = 1  
+	         THEN 'MAX( CASE Seq WHEN ' + CAST( @i AS VARCHAR ) + ' 
+                                 THEN ProductName 
+				                 ELSE SPACE(0) END ) + ' + CHAR(13) 
+      	     WHEN @i = @n 
+             THEN 'MAX( CASE Seq WHEN ' + CAST( @i AS VARCHAR ) + ' 
+                                 THEN '', '' + ProductName 
+                                 ELSE SPACE(0) END ) ' + CHAR(13) 
+             ELSE 'MAX( CASE Seq WHEN ' + CAST( @i AS VARCHAR ) + ' 
+                                 THEN '', '' + ProductName 
+                                 ELSE SPACE(0) END ) + ' + CHAR(13)  
+	    END ;
+ 	    SET @i = @i + 1 ;
+    END 
+    SET @r = @r + ' 
+    FROM ( SELECT CategoryId, ProductName, 
+                  ROW_NUMBER() OVER ( PARTITION BY CategoryId ORDER BY ProductName )
+             FROM Products p ) D ( CategoryId, ProductName, Seq ) 
+           GROUP BY CategoryId;' 
+    EXEC( @r ) ;
+</pre>
+<b><a name="#Cursor"></a>The Cursor approach</b>
+<br ><br >
+The drawbacks of rampant usage of cursors are well-known among the Transact SQL community. Given the fact that they are generally 
+resource intensive, procedural and inefficient, one should strive to avoid cursors or loop based solutions in general Transact SQL 
+programming. 
+<pre>    DECLARE @tbl TABLE (id INT PRIMARY KEY, list VARCHAR(8000)) 
+    SET NOCOUNT ON 
+    DECLARE @c INT, @p VARCHAR(8000), @cNext INT, @pNext VARCHAR(40) 
+    DECLARE c CURSOR FOR 
+        SELECT CategoryId, ProductName 
+          FROM Products 
+         ORDER BY CategoryId, ProductName ;
+        OPEN c ;
+        FETCH NEXT FROM c INTO @cNext, @pNext ;
+        SET @c = @cNext ;
+        WHILE @@FETCH_STATUS = 0 BEGIN 
+             IF @cNext &gt; @c BEGIN 
+                  INSERT @tbl SELECT @c, @p ;
+                  SELECT @p = @PNext, @c = @cNext ;
+             END ELSE 
+                  SET @p = COALESCE(@p + ',', SPACE(0)) + @pNext ;
+             FETCH NEXT FROM c INTO @cNext, @pNext 
+        END 
+        INSERT @tbl SELECT @c, @p ;
+        CLOSE c ;
+    DEALLOCATE c ;
+    SELECT * FROM @tbl ;
+</pre>
+<b><a name="#Unreliable"></a>Non-reliable approaches</b>
+		<br ><br >
+This section details a couple of notorious methods often publicized by some in public forums. The problem with these methods is that 
+they rely on the physical implementation model; changes in indexes, statistics etc or even a change of a simple expression in the 
+SELECT list or ORDER BY clause can change the output. Also these are undocumented, unsupported and unreliable to the point where one 
+can consistently demonstrate failures. Therefore these methods are not at all recommended for production mode systems. 
+		<br ><br >
+ <b><a name="#UpdateExtn"></a>Scalar UDF with t-SQL update extension  </b>
+		<br ><br >
+The usage of an expression that involves a column, a variable and an expression in the SET clause in an UPDATE statement rarely appear 
+intuitive. However, in general, the optimizer often seems to process these values in the order of materialization, either in the internal 
+work tables or any other storage structures. 
+<pre>    CREATE FUNCTION udf_update_concat (@CategoryId INT) 
+        RETURNS VARCHAR(MAX) AS 
+    BEGIN 
+    DECLARE @t TABLE(p VARCHAR(40));
+    DECLARE @r VARCHAR(MAX) ;
+        SET @r = SPACE(0) ;
+        INSERT @t ( p ) SELECT ProductName FROM Products 
+                         WHERE CategoryId = @CategoryId ;
+        IF @@ROWCOUNT &gt; 0 
+            UPDATE @t 
+               SET @r = @r + p + ',' ;
+        RETURN(@r) 
+    END 
+</pre>	
+Here is how to use this function:
+<pre>
+    SELECT CategoryId, dbo.udf_update_concat(CategoryId) 
+      FROM Products 
+     GROUP BY CategoryId ; 
+</pre>		
+Again, it is important to consider that lack of physical independence that is being exploited here before using or recommending this as 
+a usable and meaningful solution. 
+		<br ><br >
+<b><a name="#SelectConcat"></a>Scalar UDF with variable concatenation in SELECT </b>
+		<br ><br >
+This is an approach	purely dependent on the physical implementation and internal access paths. Before using this approach, make sure to 
+refer to the <a href="http://support.microsoft.com/default.aspx/kb/287515">relevant knowledgebase article</a>.     
+<pre>
+    CREATE FUNCTION dbo.udf_select_concat ( @c INT )
+    RETURNS VARCHAR(MAX) AS BEGIN
+    DECLARE @p VARCHAR(MAX) ;
+           SET @p = '' ;
+        SELECT @p = @p + ProductName + ','
+          FROM Products
+         WHERE CategoryId = @c ;
+    RETURN @p
+    END
+</pre>
+And, as for its usage:
+<pre>
+    SELECT CategoryId, dbo.udf_select_concat( CategoryId )
+      FROM Products
+     GROUP BY CategoryId ;
+</pre>		
+<b><a name="#Concl"></a>Conclusion</b>
+<br ><br >
+Regardless of how it is used, "aggregate concatenation" of row values in Transact SQL, especially when there is a grouping, is not 
+a simple routine. Various programming considerations are to be carefully considered to choose one method over another depending on 
+the situations. The most logical choice would be the availability of a built-in operator with optional configurable parameters that 
+can do the concatenation of the values depending on the type. Till then, reporting requirements and external data export routines 
+will have to rely on such Transact SQL programming hacks. 
+<br ><br >
+<b><a name="#Refer"></a>References</b>
+<ul>
+<li><a href="http://support.microsoft.com/default.aspx/kb/287515">PRB: Execution Plan and Results of Aggregate Concatenation 
+Queries Depend Upon Expression Location</a>
+<li><a href="http://www.microsoft.com/downloads/details.aspx?familyid=06616212-0356-46a0-8da2-eebc53a68034&amp;displaylang=en">Northwind and pubs 
+Sample Databases for SQL Server 2000</a>
+<li><a href="http://www.sommarskog.se/dynamic_sql.html">The Curse and Blessings of Dynamic SQL</a>
+<li><a href="http://msdn2.microsoft.com/en-us/library/ms131089.aspx">Introduction to Common Language Runtime (CLR) Integration</a></li>
+</ul>
+<b><a name="#Acknow"></a>Acknowledgements</b>
+<br ><br >
+Umachandar Jayachandran, Linda Wierzbecki, Bruce Margolin, Roy Harvey, Eugene Kogan, Vadim Tropashko 
+</td>
+	</tr>
+</table>
+
+</body>
+</html>
