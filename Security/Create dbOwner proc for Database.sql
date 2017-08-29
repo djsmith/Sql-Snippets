@@ -3,6 +3,18 @@ go
 set quoted_identifier on
 go
 
+-- Create this proc in the master so it can be used anywhere
+use master
+go
+
+if exists (select * from sys.objects where type = 'P' and name = 'sp_CreateDbOwner')
+	drop procedure sp_CreateDbOwner
+go
+
+create procedure sp_CreateDbOwner 
+	@dbNames varchar(max) = null
+as
+begin
 /* ==================================================================
  * Author:		Dan Smith
  * Create date: 2017-08-24
@@ -27,18 +39,6 @@ go
  * 
  * ================================================================*/
 
--- Create this proc in the master so it can be used anywhere
-use master
-go
-
-if exists (select * from sys.objects where type = 'P' and name = 'sp_CreateDbOwner')
-	drop procedure sp_CreateDbOwner
-go
-
-create procedure sp_CreateDbOwner 
-	@dbNames varchar(max) = null
-as
-begin
 	/* set nocount on added to prevent extra result sets from
 	   interfering with SELECT statements. */
 	set nocount on;
@@ -70,7 +70,7 @@ begin
 		where [name] not in ('master', 'model', 'msdb', 'tempdb')
 			and LOWER(@dbNames) = 'all'
 		union all
-		select [name] = LTRIM(RTRIM(T.c.value('.','varchar(20)'))) 
+		select [name] = LTRIM(RTRIM(T.c.value('.','nvarchar(255)')))
 		from @List.nodes('/root/s') T(c)
 		where LOWER(@dbNames) != 'all'
 	) as db
