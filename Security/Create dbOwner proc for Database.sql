@@ -153,10 +153,19 @@ begin
 		 * the above DENY VIEW ANY DATABASE...
 		 */
 		set @sqlCommand = @sqlCommand + N'
-		exec [' + @dbName + '].[dbo].[sp_changedbowner] ' + @dbOwner
+		exec [' + @dbName + '].[dbo].[sp_changedbowner] [' + @dbOwner + ']'
+
+		declare @errorMessage nvarchar(4000)
 
 		--print @sqlCommand
-		exec sp_executesql @sqlCommand
+		begin try
+			exec sp_executesql @sqlCommand
+		end try
+		begin catch
+			select @errorMessage = ERROR_MESSAGE()
+			raiserror (N'Error executing SQL command: "%s" %s', 10, 1, @errorMessage, @sqlCommand)
+			goto skipIt
+		end catch
 
 		print FormatMessage(CHAR(10) + 'Created user [%s] with owner rights on database [%s]. Password: %s', @dbOwner, @dbName, @password)
 
