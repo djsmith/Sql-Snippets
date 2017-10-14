@@ -113,7 +113,7 @@ begin
 		if exists (SELECT name FROM master.sys.server_principals WHERE name = @dbOwner) begin
 			raiserror (N'Login [%s] already exists.', 10, 1, @dbOwner)
 			raiserror (N'Setting [%s] to be owner of database [%s]', 10, 1, @dbOwner, @dbName)
-			declare @sqlDbOwner nvarchar(1000) set @sqlDbOwner = N'alter authorization on database::' + @dbName + ' to ' + @dbOwner
+			declare @sqlDbOwner nvarchar(1000) set @sqlDbOwner = N'alter authorization on database::[' + @dbName + N'] to [' + @dbOwner + N']'
 			declare @errorMessage nvarchar(4000)
 			begin try
 				exec sp_executesql @sqlDbOwner
